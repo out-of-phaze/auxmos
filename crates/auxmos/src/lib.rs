@@ -719,3 +719,20 @@ fn generate_hooks() {
 	}
 }
 */
+
+#[auxtools::init(partial)]
+fn _init_panic_hook() -> Result<(), String> {
+	std::panic::set_hook(Box::new(|panic_info| {
+		if let Ok(mut f) = std::fs::File::create("panic.txt") {
+			use std::io::Write;
+			if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+				println!("panic occurred: {s:?}");
+				_ = write!(f, "panic occurred: {s:?}");
+			} else {
+				println!("panic occurred");
+				_ = write!(f, "panic occurred");
+			}
+		}
+	}));
+	Ok(())
+}
