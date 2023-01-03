@@ -19,6 +19,8 @@ use std::{cell::RefCell, collections::HashSet};
 
 pub type GasIDX = usize;
 
+use once_cell::sync::Lazy;
+
 /// A static container, with a bunch of helper functions for accessing global data. It's horrible, I know, but video games.
 pub struct GasArena {}
 
@@ -31,7 +33,7 @@ pub struct GasArena {}
 */
 static GAS_MIXTURES: RwLock<Option<Vec<RwLock<Mixture>>>> = const_rwlock(None);
 
-static NEXT_GAS_IDS: RwLock<Option<Vec<usize>>> = const_rwlock(None);
+static NEXT_GAS_IDS: Lazy<(crossbeam_channel::Sender<usize>, crossbeam_channel::Receiver<usize>)> = Lazy::new(|| crossbeam_channel::bounded(2000));
 
 thread_local! {
 	static REGISTERED_GAS_MIXES: RefCell<Option<HashSet<u32, FxBuildHasher>>> = RefCell::new(None);
@@ -68,7 +70,6 @@ fn unregister_mix(i: u32) {
 #[init(partial)]
 fn _initialize_gas_mixtures() -> Result<(), String> {
 	*GAS_MIXTURES.write() = Some(Vec::with_capacity(240_000));
-	*NEXT_GAS_IDS.write() = Some(Vec::with_capacity(2000));
 	REGISTERED_GAS_MIXES.with(|thing| *thing.borrow_mut() = Some(Default::default()));
 	Ok(())
 }
@@ -77,7 +78,9 @@ fn _initialize_gas_mixtures() -> Result<(), String> {
 fn _shut_down_gases() {
 	crate::turfs::wait_for_tasks();
 	GAS_MIXTURES.write().as_mut().unwrap().clear();
-	NEXT_GAS_IDS.write().as_mut().unwrap().clear();
+	while !NEXT_GAS_IDS.1.is_empty() {
+		NEXT_GAS_IDS.1.recv().unwrap();
+	}
 	REGISTERED_GAS_MIXES.with(|thing| *thing.borrow_mut() = None);
 }
 
@@ -217,7 +220,7 @@ impl GasArena {
 	/// If not called from the main thread
 	/// If `NEXT_GAS_IDS` is not initialized, somehow.
 	pub fn register_mix(mix: &Value) -> DMResult {
-		if NEXT_GAS_IDS.read().as_ref().unwrap().is_empty() {
+		if NEXT_GAS_IDS.1.is_empty() {
 			let mut lock = GAS_MIXTURES.write();
 			let gas_mixtures = lock.as_mut().unwrap();
 			let next_idx = gas_mixtures.len();
@@ -238,8 +241,7 @@ impl GasArena {
 			)?;
 		} else {
 			let idx = {
-				let mut next_gas_ids = NEXT_GAS_IDS.write();
-				next_gas_ids.as_mut().unwrap().pop().unwrap()
+				NEXT_GAS_IDS.1.recv().unwrap()
 			};
 			GAS_MIXTURES
 				.read()
@@ -266,21 +268,21 @@ impl GasArena {
 		}
 		register_mix(mix);
 		rayon::spawn(|| {
-			if NEXT_GAS_IDS.read().as_ref().unwrap().is_empty() {
+			if NEXT_GAS_IDS.1.is_empty() {
 				let mut gas_lock = GAS_MIXTURES.write();
-				let mut ids_lock = NEXT_GAS_IDS.write();
 				let gas_mixtures = gas_lock.as_mut().unwrap();
 				let cur_last = gas_mixtures.len();
-				let next_gas_ids = ids_lock.as_mut().unwrap();
 				let cap = {
 					let to_cap = gas_mixtures.capacity() - cur_last;
 					if to_cap == 0 {
-						next_gas_ids.capacity() - 100
+						NEXT_GAS_IDS.1.capacity().unwrap() - 100
 					} else {
-						(next_gas_ids.capacity() - 100).min(to_cap)
+						(NEXT_GAS_IDS.1.capacity().unwrap() - 100).min(to_cap)
 					}
 				};
-				next_gas_ids.extend(cur_last..(cur_last + cap));
+				for i in cur_last..(cur_last + cap) {
+					NEXT_GAS_IDS.0.send(i).unwrap();
+				}
 				gas_mixtures.resize_with(cur_last + cap, Default::default);
 			}
 		});
@@ -310,8 +312,7 @@ impl GasArena {
 				if err == 1 {
 					let idx = raw.data.number.to_bits();
 					{
-						let mut next_gas_ids = NEXT_GAS_IDS.write();
-						next_gas_ids.as_mut().unwrap().push(idx as usize);
+						NEXT_GAS_IDS.0.send(idx as usize).unwrap();
 					}
 					unregister_mix(mix);
 				}
@@ -467,7 +468,7 @@ where
 }
 
 pub fn amt_gases() -> usize {
-	GAS_MIXTURES.read().as_ref().unwrap().len() - NEXT_GAS_IDS.read().as_ref().unwrap().len()
+	GAS_MIXTURES.read().as_ref().unwrap().len() - NEXT_GAS_IDS.1.len()
 }
 
 pub fn tot_gases() -> usize {
