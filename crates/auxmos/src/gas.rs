@@ -265,25 +265,23 @@ impl GasArena {
 			)?;
 		}
 		register_mix(mix);
-		rayon::spawn(|| {
-			if NEXT_GAS_IDS.read().as_ref().unwrap().is_empty() {
-				let mut gas_lock = GAS_MIXTURES.write();
-				let mut ids_lock = NEXT_GAS_IDS.write();
-				let gas_mixtures = gas_lock.as_mut().unwrap();
-				let cur_last = gas_mixtures.len();
-				let next_gas_ids = ids_lock.as_mut().unwrap();
-				let cap = {
-					let to_cap = gas_mixtures.capacity() - cur_last;
-					if to_cap == 0 {
-						next_gas_ids.capacity() - 100
-					} else {
-						(next_gas_ids.capacity() - 100).min(to_cap)
-					}
-				};
-				next_gas_ids.extend(cur_last..(cur_last + cap));
-				gas_mixtures.resize_with(cur_last + cap, Default::default);
-			}
-		});
+		if NEXT_GAS_IDS.read().as_ref().unwrap().is_empty() {
+			let mut gas_lock = GAS_MIXTURES.write();
+			let mut ids_lock = NEXT_GAS_IDS.write();
+			let gas_mixtures = gas_lock.as_mut().unwrap();
+			let cur_last = gas_mixtures.len();
+			let next_gas_ids = ids_lock.as_mut().unwrap();
+			let cap = {
+				let to_cap = gas_mixtures.capacity() - cur_last;
+				if to_cap == 0 {
+					next_gas_ids.capacity() - 100
+				} else {
+					(next_gas_ids.capacity() - 100).min(to_cap)
+				}
+			};
+			next_gas_ids.extend(cur_last..(cur_last + cap));
+			gas_mixtures.resize_with(cur_last + cap, Default::default);
+		}
 		Ok(Value::null())
 	}
 	/// Marks the Value's gas mixture as unused, allowing it to be reallocated to another.
